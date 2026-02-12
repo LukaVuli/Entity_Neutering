@@ -1,5 +1,5 @@
 import pandas as pd
-from CommonTools.credentials import GPT_API_KEY #replace this with your own OpenAI API KEY
+from CommonTools.credentials import GPT_API_KEY
 from openai import OpenAI
 import re
 import time
@@ -9,6 +9,11 @@ from abc import ABC, abstractmethod
 import requests
 from requests.auth import HTTPBasicAuth
 import os
+import torch
+import tiktoken
+import gc
+import sys
+
 time_token_tracker = deque()
 
 
@@ -30,6 +35,7 @@ def remove_old_tokens(time_token_tracker):
     while time_token_tracker and current_time - time_token_tracker[0][0] > 60:
         time_token_tracker.popleft()
 
+
 def estimate_token_count(word_count):
     """
     Estimates the number of tokens based on word count.
@@ -47,11 +53,12 @@ def estimate_token_count(word_count):
     token_estimate = word_count * 1.45
     return int(token_estimate)
 
+
 class LLM_Agent(ABC):
     """
     Abstract base class for LLM agents (language model interfaces).
 
-    This class defines the common interface that all language model 
+    This class defines the common interface that all language model
     wrappers must implement, regardless of the underlying model provider.
 
     All LLM agent implementations should inherit from this class and
@@ -80,6 +87,7 @@ class LLM_Agent(ABC):
         """
         pass
 
+
 class GPT_Agent(LLM_Agent):
     """
     Agent class for interacting with OpenAI's GPT models.
@@ -92,7 +100,8 @@ class GPT_Agent(LLM_Agent):
     with appropriate parameter adjustments for each family.
     """
 
-    def __init__(self, OpenAIclient, SystemContent, model="gpt-4o-mini", max_tokens=16384, top_p=1, temperature=0, frequency_penalty=0, presence_penalty=0, logprobs=False, top_logprobs=None):
+    def __init__(self, OpenAIclient, SystemContent, model="gpt-4o-mini", max_tokens=16384, top_p=1, temperature=0,
+                 frequency_penalty=0, presence_penalty=0, logprobs=False, top_logprobs=None):
         """
         Initialize a GPT agent with the specified parameters.
 
@@ -258,6 +267,7 @@ class GPT_Agent(LLM_Agent):
         output_df = pd.concat([df.assign(name=name) for name, df in output_dict.items()], ignore_index=True)
         return output_df
 
+
 class Ollama_Agent(LLM_Agent):
     """
     Agent class for interacting with locally-hosted models through Ollama.
@@ -269,7 +279,9 @@ class Ollama_Agent(LLM_Agent):
     Handles the specific API format and parameters required by the Ollama API
     while maintaining the same general workflow as other LLM agents.
     """
-    def __init__(self, SystemContent, model=None, max_tokens=16384, top_p=1, temperature=0, frequency_penalty=0, presence_penalty=0):
+
+    def __init__(self, SystemContent, model=None, max_tokens=16384, top_p=1, temperature=0, frequency_penalty=0,
+                 presence_penalty=0):
         """
         Initialize an Ollama agent with the specified parameters.
 
@@ -289,6 +301,7 @@ class Ollama_Agent(LLM_Agent):
         self.top_p = top_p
         self.presence_penalty = presence_penalty
         self.frequency_penalty = frequency_penalty
+
     # noinspection PyMethodOverriding
     def response(self, UserContent, InputWrapper, OutputWrapper, **kwargs):
         """
@@ -309,28 +322,32 @@ class Ollama_Agent(LLM_Agent):
             Can process both simple strings and DataFrame row objects
         """
         defaultGPTparam = {
-            "model":self.model,
+            "model": self.model,
             "options": {
-                "temperature":self.temperature,
-                "top_p":self.top_p,
-                "presence_penalty":self.presence_penalty,
-                "frequency_penalty": self.frequency_penalty,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                # "presence_penalty":self.presence_penalty,
+                "frequency_penalty": (self.frequency_penalty + 2),
                 "max_tokens": self.max_tokens,
-                "reset": True
-            }
+                "repeat_penalty": (self.frequency_penalty + 2),
+                "num_predict": self.max_tokens,
+                "reset": False,
+                "reasoning_effort": "low",  # Options: "low", "medium", "high"
+            },
+            "keep_alive": "60m"
         }
         kwargs = {**defaultGPTparam, **kwargs}
         UserContent = InputWrapper(UserContent)
         response = ollama.chat(model=kwargs.get('model'), messages=[
-        {
-        'role': 'system',
-        'content': self.SystemContent,
-        },
-        {
-        'role': 'user',
-        'content': UserContent,
-        },
-        ],options=kwargs.get('options'))
+            {
+                'role': 'system',
+                'content': self.SystemContent,
+            },
+            {
+                'role': 'user',
+                'content': UserContent,
+            },
+        ], options=kwargs.get('options'))
         res = response['message']['content']
         output = OutputWrapper(res, **kwargs)
         return output
@@ -372,10 +389,11 @@ class Ollama_Agent(LLM_Agent):
                 result_string = 'An error occurred: Error the error is there is no post self_text'
                 response_df = OutputWrapper(result_string, **kwargs)
             else:
-                tokens = int(row['word_count']*2)# approximate tokens with 2 since we have a huge instruction prompt and are missing title
+                tokens = int(row[
+                                 'word_count'] * 2)  # approximate tokens with 2 since we have a huge instruction prompt and are missing title
                 if tokens > 120000:
                     too_big.append(row['name'])
-                    continue # Skip posts that are too big
+                    continue  # Skip posts that are too big
                 current_time = time.time()
                 time_token_tracker.append((current_time, tokens))
                 remove_old_tokens(time_token_tracker)

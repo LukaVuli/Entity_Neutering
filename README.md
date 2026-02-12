@@ -47,7 +47,7 @@ If you use this methodology in your research, please cite the original paper:
    - Enable both masking and paraphrasing (default)
    - Use masking only
    - Use paraphrasing only
-   - Skip neutering entirely (work with raw text)
+   - Skip neutering entirely and perform extraction on raw or pre-neutered text
 
 4. **Iterative Refinement**: Up to 8 rounds (configurable) of additional masking and/or paraphrasing for texts that remain identifiable
 
@@ -98,6 +98,7 @@ The `NEUTER_ARGS` dictionary contains all configurable parameters for the entity
 - **`masking`** (bool, default: True): Enable masking step in the neutering pipeline
 - **`paraphrase`** (bool, default: True): Enable paraphrasing step in the neutering pipeline
 - **`extraction_name`** (str, default: 'LLM_RAW'): Column name for raw text sentiment extraction
+- **`identification_column`** (str, default: 'Body Text Neutered'): Column name to use for identification testing when all processing is disabled
 
 ### Output Control Parameters
 
@@ -193,45 +194,60 @@ paraphrase_only_args.update({
 neuter_data(df, **paraphrase_only_args)
 ```
 
-#### 4. No Neutering (Sentiment Analysis on Raw Text Only)
+#### 4. No Neutering (Extraction on Raw Text Only)
 
 ```python
 from EntityNeutering import neuter_data, NEUTER_ARGS
 
-# Skip neutering entirely, only perform sentiment analysis
+# Skip neutering entirely, only perform extraction (e.g., sentiment) on raw text
 raw_text_only_args = NEUTER_ARGS.copy()
 raw_text_only_args.update({
     'masking': False,
     'paraphrase': False,
     'perform_sentiment': True,
     'sentiment_on_raw': True,
-    'sentiment_on_neutered': False,  # Can't perform sentiment on neutered if not neutering
+    'sentiment_on_neutered': False,  # No neutering performed
 })
 
 neuter_data(df, **raw_text_only_args)
 ```
 
-#### 5. Maximum Anonymization (High Security)
+#### 5. Extraction on Pre-Neutered Text
 
 ```python
 from EntityNeutering import neuter_data, NEUTER_ARGS
 
-# Maximum rounds with full logging
-max_security_args = NEUTER_ARGS.copy()
-max_security_args.update({
-    'max_rounds': 12,  # More rounds for difficult-to-neuter texts
-    'masking': True,
-    'paraphrase': True,
-    'save_intermediate': True,
-    'save_round_files': True,
-    'verbose': True,
-    'log_errors': True
+# If you already have neutered text in your data and want to extract sentiment from it
+# Note: Specify 'identification_column' if your neutered text column has a different name
+# Default is 'Body Text Neutered'
+pre_neutered_args = NEUTER_ARGS.copy()
+pre_neutered_args.update({
+    'masking': False,
+    'paraphrase': False,
+    'perform_sentiment': True,
+    'sentiment_on_raw': False,
+    'sentiment_on_neutered': True,
+    'identification_column': 'Body Text Neutered',  # Specify your neutered text column name
 })
 
-neuter_data(df, **max_security_args)
+neuter_data(df, **pre_neutered_args)
 ```
 
-#### 6. Using OpenAI GPT Models
+#### 6. Increasing Maximum Iterations
+
+```python
+from EntityNeutering import neuter_data, NEUTER_ARGS
+
+# Increase maximum rounds for difficult-to-neuter texts
+increased_rounds_args = NEUTER_ARGS.copy()
+increased_rounds_args.update({
+    'max_rounds': 20,  # Increase from default 8 to 20 rounds
+})
+
+neuter_data(df, **increased_rounds_args)
+```
+
+#### 8. Using OpenAI GPT Models
 
 ```python
 from EntityNeutering import neuter_data, NEUTER_ARGS
@@ -248,7 +264,7 @@ openai_args.update({
 neuter_data(df, **openai_args)
 ```
 
-#### 7. Using Different Ollama Models
+#### 9. Using Different Ollama Models
 
 ```python
 from EntityNeutering import neuter_data, NEUTER_ARGS

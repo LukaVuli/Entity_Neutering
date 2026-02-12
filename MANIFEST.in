@@ -1,0 +1,14 @@
+# Include documentation
+include README.md
+include LICENSE
+
+# Include setup files
+include setup.py
+include requirements.txt
+
+# Exclude development files
+exclude .gitignore
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude .git *
+recursive-exclude .idea *

@@ -1,14 +1,16 @@
-
+import gc
+import math
+import re
 import time
+
+import numpy as np
 import pandas as pd
-from CommonTools.prompts import sentiment, de_neuter_name, mask_template, para_template, mask_template_iter, para_template_iter
+from fuzzywuzzy import fuzz
+from openai import OpenAI
+
 from CommonTools.GPT_agent import GPT_Agent, Ollama_Agent
 from CommonTools.credentials import GPT_API_KEY
-from openai import OpenAI
-from fuzzywuzzy import fuzz
-import numpy as np
-import re
-import math
+
 pd.options.mode.chained_assignment = None  # Disable chained assignment warning
 COMMON_SUFFIXES = [
     'group', 'holdings', 'holding', 'ltd', 'corp', 'inc', 'co', 'llc', 'plc', 'gmbh', 'ag', 's.a.', 's.a', 'bv', 'nv',
@@ -24,9 +26,9 @@ _MAG_RE = re.compile(
 )
 # Labels we might see after a value (used for lookaheads)
 _NEXT_LABELS = r'(?:ticker|name|date|year|industry|sector)\s*estimate'
-_PAT_TICKER   = re.compile(rf'(?i)ticker\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
-_PAT_NAME     = re.compile(rf'(?i)name\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
-_PAT_DATE     = re.compile(rf'(?i)(?:date|year)\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
+_PAT_TICKER = re.compile(rf'(?i)ticker\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
+_PAT_NAME = re.compile(rf'(?i)name\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
+_PAT_DATE = re.compile(rf'(?i)(?:date|year)\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
 _PAT_INDUSTRY = re.compile(rf'(?i)(?:industry|sector)\s*estimate\s*:\s*(.*?)\s*(?:,|;)?\s*(?={_NEXT_LABELS}|$)')
 
 
@@ -114,16 +116,28 @@ def process_llm_responses(df, column_name, input_string, agent, provider='openai
     return df
 
 
-def _make_agent(provider, gpt_api_key, system_prompt, model_name):
+def _make_agent(provider, gpt_api_key, system_prompt, model_name, max_tokens_input=128000):
     """
     Returns an agent instance based on provider.
-    provider: "openai" or "ollama"
+
+    Args:
+        provider: "openai", "ollama"
+        gpt_api_key: API key for OpenAI (not used for ollama)
+        system_prompt: System prompt/instructions for the model
+        model_name: Model identifier:
+            - For openai: e.g., 'gpt-4o-mini', 'gpt-5-nano-2025-08-07'
+            - For ollama: e.g., 'llama3', 'gemma:7b'
+
+    Returns:
+        LLM_Agent instance (GPT_Agent, Ollama_Agent)
     """
-    if str(provider).lower() == 'ollama':
+    provider_lower = str(provider).lower()
+
+    if provider_lower == 'ollama':
         # Uses your Ollama_Agent class (local model name like 'llama3', 'gemma:7b', etc.)
         return Ollama_Agent(system_prompt, model=model_name)
     # default to OpenAI GPT agent
-    return GPT_Agent(OpenAI(api_key=gpt_api_key), system_prompt, model=model_name)
+    return GPT_Agent(OpenAI(api_key=gpt_api_key), system_prompt, model=model_name, max_tokens=max_tokens_input)
 
 
 def process_llm_responses_dynamic(df, column_name, input_string, prompt_template=None,
@@ -137,8 +151,8 @@ def process_llm_responses_dynamic(df, column_name, input_string, prompt_template
         input_string: Name of the column containing text to send to the LLM
         prompt_template: Either a static string prompt or a dictionary with 'template' key
                          containing a list of components for dynamic prompt construction
-        model: Optional model name (e.g., 'gpt-4' for OpenAI or 'llama3' for Ollama)
-        provider: LLM provider - either 'openai' or 'ollama' (default: 'openai')
+        model: Optional model name (e.g., 'gpt-4' for OpenAI, 'llama3' for Ollama)
+        provider: LLM provider - 'openai', 'ollama' (default: 'openai')
         gpt_api_key: API key for OpenAI (required if provider is 'openai')
 
     Returns:
@@ -146,7 +160,6 @@ def process_llm_responses_dynamic(df, column_name, input_string, prompt_template
 
     Note:
         Dynamic templates can include static text and references to DataFrame columns
-        Creates a new agent for each row to use row-specific prompt data
         Handles errors and logs processing time
     """
     # Validate inputs
@@ -194,6 +207,14 @@ def process_llm_responses_dynamic(df, column_name, input_string, prompt_template
                         print(f"Warning: Invalid component in prompt template: {component}")
 
                 full_prompt = ''.join(prompt_parts)
+
+                # For dynamic prompts, we need to create agent per row
+                current_agent = _make_agent(
+                    provider=provider,
+                    gpt_api_key=gpt_api_key,
+                    system_prompt=full_prompt,
+                    model_name=model
+                )
             else:
                 # Static string prompt
                 full_prompt = prompt_template
@@ -249,6 +270,7 @@ def extract_sentiment_features(df, response_column, new_columns):
     df[new_columns] = df[response_column].apply(lambda x: pd.Series(extract_direction_and_magnitude(x)))
     df[new_columns[1]] = pd.to_numeric(df[new_columns[1]], errors='coerce')
     return df
+
 
 def extract_direction_and_magnitude(text):
     """
@@ -311,6 +333,7 @@ def _normalize_text(x):
     s = str(x).replace('*', '').replace('`', '').replace('_', '')
     return re.sub(r'\s+', ' ', s).strip()
 
+
 def _get(pattern, s):
     """
     Helper function that extracts text matching a regex pattern.
@@ -325,6 +348,7 @@ def _get(pattern, s):
     m = pattern.search(s)
     return m.group(1).strip().rstrip(',;') if m else 'NA'
 
+
 def _norm_na(val):
     """
     Helper function to normalize various forms of 'not available' values.
@@ -338,6 +362,7 @@ def _norm_na(val):
     if not isinstance(val, str):
         return 'NA'
     return 'NA' if val.strip().lower() in {'', 'na', 'n/a', 'nan', 'none', 'null', 'missing'} else val.strip()
+
 
 def extract_it(text):
     """
@@ -360,12 +385,13 @@ def extract_it(text):
         return 'NA', 'NA', 'NA', 'NA'
     s = _normalize_text(text)
 
-    ticker   = _norm_na(_get(_PAT_TICKER, s))
-    name     = _norm_na(_get(_PAT_NAME, s))
-    date     = _norm_na(_get(_PAT_DATE, s))
+    ticker = _norm_na(_get(_PAT_TICKER, s))
+    name = _norm_na(_get(_PAT_NAME, s))
+    date = _norm_na(_get(_PAT_DATE, s))
     industry = _norm_na(_get(_PAT_INDUSTRY, s))
 
     return ticker, name, date, industry
+
 
 def extract_it_features(df, response_column, new_columns):
     """
@@ -374,7 +400,7 @@ def extract_it_features(df, response_column, new_columns):
     Args:
         df: DataFrame containing LLM de-neutering responses
         response_column: Name of column containing raw LLM identification attempts
-        new_columns: List of four column names for extracted values: 
+        new_columns: List of four column names for extracted values:
                     [ticker_column, name_column, date_column, industry_column]
 
     Returns:
@@ -406,8 +432,9 @@ def clean_name(name: str) -> str:
     name = PARENS_PATTERN.sub('', name)  # Remove parentheticals like (THE)
     name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     name = SUFFIX_PATTERN.sub('', name)  # Remove common suffixes
-    name = re.sub(r'\s+', '', name)      # Remove all spaces
+    name = re.sub(r'\s+', '', name)  # Remove all spaces
     return name.strip()
+
 
 def compare_names(row):
     """
@@ -432,6 +459,7 @@ def compare_names(row):
 
     return fuzz.ratio(name1, name2)
 
+
 def compare_names_generic(row, guess_column='Name_Guess'):
     """
     More flexible version of compare_names that works with any column name for guessed names.
@@ -454,6 +482,7 @@ def compare_names_generic(row, guess_column='Name_Guess'):
     name2 = clean_name(str(row[guess_column]).strip())
     similarity = fuzz.token_sort_ratio(name1, name2)
     return similarity
+
 
 def check_if_identified(df, threshold=75, date_col='Date_Guess', name_col='Name_Guess', suffix='_neutered'):
     """

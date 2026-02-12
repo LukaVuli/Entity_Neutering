@@ -1,31 +1,34 @@
-from CommonTools.credentials import GPT_API_KEY
-from openai import OpenAI
-from CommonTools.prompts import sentiment, de_neuter_name, mask_template, para_template, mask_template_iter, para_template_iter
-from CommonTools.GPT_agent import GPT_Agent, Ollama_Agent
-import pandas as pd
-import numpy as np
-import time
+import datetime
 import multiprocessing as mp
 import os
-import datetime
 import random
-from CommonTools.CommonTools import _make_agent, process_llm_responses, process_llm_responses_dynamic, extract_sentiment_features, extract_it_features, check_if_identified
+import time
+
+import numpy as np
+import pandas as pd
+
+from CommonTools.CommonTools import _make_agent, process_llm_responses, process_llm_responses_dynamic, \
+    extract_sentiment_features, extract_it_features, check_if_identified
+from CommonTools.credentials import GPT_API_KEY
+from CommonTools.prompts import sentiment, de_neuter_name, mask_template, para_template, mask_template_iter, \
+    para_template_iter
+
 pd.options.mode.chained_assignment = None  # Disable chained assignment warning
-output_dir = '/Users/User/Desktop/ParProcess_Output/'
+output_dir = os.path.expanduser('~') + '/'
 
 # Define all neuter arguments as a global dict
 NEUTER_ARGS = {
     'output_dir': output_dir,
-    'gpt_api_key': GPT_API_KEY,
+    'gpt_api_key': GPT_API_KEY or os.getenv('OPENAI_API_KEY', ''),  # Check env var as fallback
     'mask_template': mask_template,
     'para_template': para_template,
-    'mask_template_iter': mask_template_iter,
+    'mask_template_iter': mask_template_iter,#mask_template_iter
     'para_template_iter': para_template_iter,
     'de_neuter_name': de_neuter_name,
     'sentiment_template': sentiment,
     # Optional parameters - customize as needed
     'max_rounds': 8,
-    'model_name': 'gemma3:4b', # gpt-4o-mini # gpt-5-nano-2025-08-07 # gpt-oss:20b # gemma3:27b # gemma3:4b
+    'model_name': 'gpt-5-nano-2025-08-07', # gpt-4o-mini # gpt-5-nano-2025-08-07 # gpt-oss:20b # gemma3:27b
     'save_intermediate': True,
     'save_round_files': True,
     'perform_sentiment': True,
@@ -37,10 +40,11 @@ NEUTER_ARGS = {
     'use_random_filename': True,
     'custom_filename_prefix': "instance",
     'return_dataframe': False,
-    'llm_provider': 'ollama', #ollama # openai
+    'llm_provider': 'openai',
     'paraphrase': True,
     'masking': True,
-    'extraction_name': 'LLM_RAW'
+    'extraction_name': 'LLM_RAW',
+    'identification_column': 'Body Text Neutered'
 }
 
 
@@ -61,7 +65,7 @@ def neuter_data(
         sentiment_template,
         # Customizable parameters
         max_rounds=8,
-        model_name='gpt-5-nano-2025-08-07',
+        model_name='gpt-5-nano-2025-08-07', # gpt-4o-2024-08-06 , gpt-5-nano-2025-08-07
         save_intermediate=True,
         save_round_files=True,
         perform_sentiment=True,
@@ -75,8 +79,9 @@ def neuter_data(
         return_dataframe=False,
         llm_provider='openai',
         paraphrase=True,
-        masking=True,  # NEW: Parameter to control masking
-        extraction_name = 'LLM_RAW'
+        masking=True,
+        extraction_name = 'LLM_RAW',
+        identification_column='Body Text Neutered'
 ):
     """
     Process text data through masking, paraphrasing, and sentiment analysis pipeline.
@@ -99,28 +104,63 @@ def neuter_data(
             print(f"Masking enabled: {masking}")
             print(f"Paraphrasing enabled: {paraphrase}")
 
+        # Check if all processing is off - only run identification test
+        if not masking and not paraphrase and not sentiment_on_raw and not sentiment_on_neutered:
+            if verbose:
+                print(f"Instance {random_number}: All processing disabled - running identification test only on column '{identification_column}'")
+
+            random_sample = instance_data.copy()
+
+            # Check that the identification column exists
+            if identification_column not in random_sample.columns:
+                raise ValueError(f"Identification column '{identification_column}' not found in data. Available columns: {list(random_sample.columns)}")
+
+            # Run identification test on the specified column
+            deneuter_agent = _make_agent(llm_provider, gpt_api_key, de_neuter_name, model_name)
+            random_sample = process_llm_responses(random_sample, 'LLM_DENEUTER_GUESS_IDENT_ONLY', identification_column,
+                                                  deneuter_agent, provider=llm_provider)
+            random_sample = extract_it_features(
+                random_sample,
+                'LLM_DENEUTER_GUESS_IDENT_ONLY',
+                ['Ticker_Guess', 'Name_Guess', 'Date_Guess', 'Industry_Guess']
+            )
+            random_sample = check_if_identified(random_sample, suffix='_identification_only')
+
+            # Save final result
+            final_save_path = output_path.replace(".csv", "_FINAL_FINAL_FINAL.csv")
+            random_sample.to_csv(final_save_path)
+
+            if verbose:
+                print(f"Instance {random_number}: Identification test completed.")
+                print(f"Instance {random_number}: Final output saved to {final_save_path}")
+
+            if return_dataframe:
+                return random_sample
+            return
+
         if not masking and not paraphrase:
             if verbose:
                 print(f"Instance {random_number}: Both masking and paraphrasing disabled - working with raw text only")
 
-            # Skip all neutering steps, work directly with raw text
             random_sample = instance_data.copy()
+            if sentiment_on_neutered:
+                print(f"WARNING Instance {random_number}: sentiment_on_neutered is True but masking and paraphrasing are False. Will perform sentiment analysis on neutered text if it exists.")
+                sentiment_agent = _make_agent(llm_provider, gpt_api_key, sentiment_template, model_name,max_tokens_input=1000)
+                random_sample = process_llm_responses(random_sample, extraction_name, 'Body Text Neutered', sentiment_agent, provider=llm_provider)
+                random_sample = extract_sentiment_features(random_sample, extraction_name, ['Direction_neut_special', 'Magnitude_neut_special'])
+
+            # Skip all neutering steps, work directly with raw text
             random_sample['Body Text Neutered'] = random_sample['Body Text']
             random_sample['neutered_at_round'] = 0
             random_sample['neutered_at_step'] = 'no_neutering'
-
-            # Skip sentiment on neutered text if requested
-            if sentiment_on_neutered:
-                print(
-                    f"WARNING Instance {random_number}: sentiment_on_neutered is True but masking and paraphrasing are False. Skipping neutered sentiment.")
 
             # Only perform sentiment on raw text if requested
             if perform_sentiment and sentiment_on_raw:
                 if verbose:
                     print(f"Instance {random_number}: Performing sentiment analysis on raw text...")
-                sentiment_agent = _make_agent(llm_provider, gpt_api_key, sentiment_template, model_name)
+                sentiment_agent = _make_agent(llm_provider, gpt_api_key, sentiment_template, model_name,max_tokens_input=128000)
                 random_sample = process_llm_responses(random_sample, extraction_name, 'Body Text', sentiment_agent, provider=llm_provider)
-                #random_sample = extract_sentiment_features(random_sample, extraction_name, ['Direction', 'Magnitude'])
+                random_sample = extract_sentiment_features(random_sample, extraction_name, ['Direction', 'Magnitude'])
 
             # Save final result
             final_save_path = output_path.replace(".csv", "_FINAL_FINAL_FINAL.csv")
@@ -597,7 +637,6 @@ def neuter_data(
         if return_dataframe:
             return None
         return
-
 
 if __name__ == "__main__":
     mp.set_start_method("spawn")  # For macOS multiprocessing
