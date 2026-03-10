@@ -1,0 +1,76 @@
+# Entity Neutering
+
+**Authors:** Joseph Engelberg (UC San Diego), Asaf Manela (Washington University in St. Louis), William Mullins (UC San Diego), Luka Vulicevic (UC San Diego)
+**SSRN:** https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5182756
+**GitHub:** https://github.com/LukaVuli/Entity_Neutering
+**Python package:** https://pypi.org/project/entity-neutering/
+**License:** MIT
+
+## What is this paper about?
+
+Cutting-edge LLMs are trained on recent data, creating a concern about look-ahead bias: when an LLM is asked to predict an outcome from historical text, it may use knowledge of what actually happened, acquired from its training data, rather than relying solely on the text provided. This paper proposes a solution called entity neutering. The method uses an LLM agent to iteratively (i) mask entity-identifying terms and (ii) paraphrase the text until a separate LLM instance cannot identify the subject firm from the transformed text. The key insight is that the LLM is both the source of the problem and the solution: it is used to de-identify text so thoroughly that look-ahead bias cannot operate, while preserving the semantic content needed for tasks like sentiment extraction. An econometric framework, building on Ludwig, Mullainathan, and Rambachan (2024), provides an upper bound on the contribution of look-ahead bias to predictive performance.
+
+## Important context
+
+"Entity neutering" is not simple name masking. Prior work (Sarkar and Vafa, 2024; Glasserman and Lin, 2023) masks firm names and a handful of associated terms, but LLMs can still identify firms from contextual clues at rates of 47-69%. Entity neutering goes further: it iteratively masks all identifying information (names, products, industries, locations, dates, numbers) and then paraphrases the entire text to defeat identification via memorized token sequences. The procedure is agentic — it loops masking, paraphrasing, and an independent identification check until the LLM fails to recognize the entity, up to a maximum number of iterations.
+
+"Look-ahead bias" in this paper is formalized as a special case of training leakage (Ludwig et al., 2024). Training leakage occurs when texts in the researcher's sample are overrepresented in the LLM's training data, and this overrepresentation covaries with predictive loss. The paper does not claim to eliminate all look-ahead bias; it provides upper bounds on its contribution to predictability.
+
+The paper uses GPT-5 nano (specifically the time-stamped model gpt-5-nano-2025-08-07 via API, without internet access) for entity neutering. The methodology is model-agnostic and available as a Python package.
+
+## Data and methods
+
+Three text datasets are studied. The primary dataset is a random sample of approximately 509,000 Dow Jones Newswire articles from 2000-2022, filtered following the procedures in Ke, Kelly, and Xiu (2019). The second is approximately 102,000 Management Discussion and Analysis (MD&A) sections from 10-Q and 10-K filings between 2002-2023, sourced from the University of Notre Dame repository. The third is approximately 11,400 earnings call transcripts from 2017-2024 from the STRUX dataset (Lu et al., 2025).
+
+The entity neutering procedure iterates between masking (replacing identifying terms with anonymous placeholders) and paraphrasing (rewriting the text to defeat memorization-based identification). After each step, a fresh LLM instance attempts to identify the firm and date. The process continues for up to 9 iterations on news articles and 20 iterations on longer texts.
+
+Identification is validated using ChatGPT (the neutering model) as well as two open-weight models: Meta's Llama 3.2 (3B) and Google's Gemma 3 (4B). Sentiment is extracted using a structured prompt that elicits both direction (bull/bear) and magnitude. Return predictability is measured using DGTW characteristic-adjusted returns, with controls following Tetlock, Saar-Tsechansky, and Macskassy (2008).
+
+The econometric framework introduces two key properties for a neutering function: generalization neutrality (the neutered text exhibits no training leakage) and loss fidelity (the neutered text preserves predictive content). Proposition 1 shows that under these assumptions, the in-sample increase in predictive loss from neutering provides an upper bound on training leakage in the raw text.
+
+## Key results
+
+After entity neutering with up to 9 iterations, ChatGPT identifies the subject firm in only 0.11% of news articles — identical to the random guessing rate. The date is identified within a two-week window only 0.03% of the time. Llama 3.2 and Gemma 3 achieve similarly low identification rates (0.07% and 0.08%) on text neutered by ChatGPT.
+
+Among the 509,026 unidentifiable news articles, the sentiment direction of the neutered text matches the raw text 96-97% of the time. The Spearman rank correlation of sentiment magnitudes between raw and neutered text is 81%.
+
+Return predictability from neutered sentiment is similar to that from raw sentiment. For example, the next-day DGTW long-short return from binary sentiment is 10-11 basis points for both raw and neutered text, with the difference not statistically significant. Upper bounds on look-ahead bias are at most 12% of raw-text predictive improvement for binary sentiment and 36% for strong-vs-weak sentiment when predicting next-day returns from news articles.
+
+For MD&As, identification rates are 0.29% for firm names after 20 iterations. Look-ahead bias bounds are larger (41-45% for next-day returns), suggesting the problem may be more severe for longer texts. For earnings call transcripts, the identification rate reaches 3.56% after 20 iterations.
+
+Neutered sentiment from GPT-5 nano outperforms dictionary-based approaches (Loughran and McDonald, 2011; Garcia, Hu, and Rohrer, 2023) by approximately 5x in return predictability, showing that entity neutering preserves the empirical gains of frontier LLMs while addressing look-ahead bias.
+
+## Limitations and scope
+
+The sample of approximately 500,000 Dow Jones Newswire articles is a 20% random sample of the filtered archive, not the full archive. The cost of API calls (approximately $1,500 per 100,000 articles) is a binding constraint on sample size.
+
+Entity neutering is validated using GPT-5 nano, Llama 3.2 (3B), and Gemma 3 (4B). Future, more capable models may be better at identifying entities from neutered text — but the neutering step also improves with model capability, since it uses the same frontier models.
+
+The upper bound on look-ahead bias is an upper bound, not a point estimate. The gap between raw and neutered predictability can arise from look-ahead bias or from information loss during neutering or both. The bound requires two assumptions: that neutering does not improve prediction (loss infidelity is nonnegative), and that the neutered text achieves generalization neutrality.
+
+For longer texts (MD&As and earnings call transcripts), identification rates are higher and bounds on look-ahead bias are wider. Entity neutering is more effective on short news articles than on 7,000-8,000 word texts.
+
+The paper does not model why the LLM fails or succeeds at identification — the approach is empirical and treats the LLM as a black box.
+
+The sentiment extraction prompt explicitly mentions future returns, which is by design (to test a setting where look-ahead bias could operate), but this means results may not generalize to other prompt designs or tasks.
+
+The neutering procedure is applied to English-language financial text only. Its effectiveness on texts in other languages or domains is untested.
+
+## Software and replication
+
+The entity neutering methodology is implemented as an open-source Python package:
+
+- **PyPI:** `pip install entity-neutering` (https://pypi.org/project/entity-neutering/)
+- **GitHub:** https://github.com/LukaVuli/Entity_Neutering (MIT License)
+
+The repository contains the core neutering pipeline (EntityNeutering.py), robustness checks using locally-run open-weight models (OllamaRobustness.py), and common tools. The GitHub repository is the canonical source for the most recent version of the methodology, which may improve over time. The paper explicitly recommends that researchers use the latest version from GitHub rather than reimplementing from the paper's prompts.
+
+The full prompts for masking, identification testing, paraphrasing, iterated masking, iterated paraphrasing, and sentiment extraction are provided in Appendix B of the paper.
+
+## Navigation guide
+
+For a first read, the Introduction (Section 1) and the three-column example of Coca-Cola on page 3 provide the core intuition. Figure 1 is a roadmap for the entire paper. Section 2 (Econometric Framework) formalizes look-ahead bias, neutering functions, and the bound on training leakage — Proposition 1 is the main theoretical result. Section 4 contains the primary empirical analysis on news articles, including identification rates (Section 4.2), sentiment similarity (Section 4.3), return predictability (Section 4.4), and the bounding exercise (Section 4.4.1). Section 5 extends the analysis to MD&As and earnings calls. Section 5.2.1 offers practical guidance for researchers applying entity neutering in their own work. Appendix B provides all LLM prompts used in the paper.
+
+## Publication status
+
+Working paper. First draft: February 1, 2025. Current draft: January 30, 2026. Available on SSRN (abstract ID 5182756). The methodology is under active development; the GitHub repository reflects the most current version.
